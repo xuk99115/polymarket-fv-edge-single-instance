@@ -9,8 +9,8 @@ def make_market(now, *, up_ask=0.55, down_ask=0.45):
         "slug": f"btc-updown-15m-{start}",
         "end_date": (now + timedelta(minutes=2)).isoformat(),
         "outcomes": [
-            {"index": 0, "label": "Up", "best_bid": up_ask - 0.01, "best_ask": up_ask},
-            {"index": 1, "label": "Down", "best_bid": down_ask - 0.01, "best_ask": down_ask},
+            {"index": 0, "label": "Up", "best_bid": up_ask - 0.01, "best_ask": up_ask, "quote_source": "clob"},
+            {"index": 1, "label": "Down", "best_bid": down_ask - 0.01, "best_ask": down_ask, "quote_source": "clob"},
         ],
     }
 

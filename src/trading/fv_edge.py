@@ -181,6 +181,11 @@ class FVEdgeStrategy:
         if len(outcomes) < 2:
             return None
         up, down = outcomes[0], outcomes[1]
+        up_qsrc = up.get("quote_source", "")
+        down_qsrc = down.get("quote_source", "")
+        # 只使用 CLOB 实时盘口, 跳过 gamma mid fallback (可能过期或无真实流动性)
+        if up_qsrc != "clob" or down_qsrc != "clob":
+            return None
         up_ask = float(up.get("best_ask") or 0)
         up_bid = float(up.get("best_bid") or 0)
         down_ask = float(down.get("best_ask") or 0)
