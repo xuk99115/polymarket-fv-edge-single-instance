@@ -907,9 +907,9 @@ function syncSettingsToUI() {
     setVal('cfg-input-funder',     cfg.POLYMARKET_FUNDER_ADDRESS || cfg.POLYMARKET_WALLET_ADDRESS || '');
     setVal('cfg-input-position', String(cfg.FV_EDGE_POSITION_USD || cfg.paper_bet_amount || 2.0));
     setVal('cfg-input-edge', String(cfg.FV_EDGE_THRESHOLD_BPS || 300));
-    setVal('cfg-input-mte', String(cfg.FV_EDGE_MAX_MTE || 2.0));
+    setVal('cfg-input-mte', String(cfg.FV_EDGE_MAX_MTE || 1.5));
     setVal('cfg-input-max-positions', String(cfg.FV_EDGE_MAX_OPEN_POSITIONS || 1));
-    setVal('cfg-input-btc-age', String(cfg.FV_EDGE_MAX_BTC_AGE_SECONDS || 10));
+    setVal('cfg-input-btc-age', String(cfg.FV_EDGE_MAX_BTC_AGE_SECONDS || 3));
 }
 
 export function togglePositionExpand(id) {

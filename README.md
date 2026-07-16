@@ -30,13 +30,18 @@ On first launch, `run.sh` copies `.env.example` to `.env`. Important settings:
 | --- | ---: | --- |
 | `TRADING_MODE` | `paper_live` | `paper_live` or `live` |
 | `DRY_RUN` | `true` | Must be explicitly set to `false` for real orders |
+| `FV_EDGE_ENABLE_LIVE` | `false` | Disabled until settlement/redeem lifecycle is implemented |
 | `FV_EDGE_POSITION_USD` | `2.0` | Stake per accepted signal |
 | `FV_EDGE_THRESHOLD_BPS` | `300` | Minimum positive edge |
-| `FV_EDGE_MAX_MTE` | `2.0` | Latest entry window in minutes |
+| `FV_EDGE_MAX_MTE` | `1.5` | Latest entry window in minutes |
 | `FV_EDGE_MIN_PRICE` | `0.10` | Minimum executable ask |
 | `FV_EDGE_MAX_PRICE` | `0.85` | Maximum executable ask |
-| `FV_EDGE_MAX_BTC_AGE_SECONDS` | `10` | Reject stale BTC prices |
+| `FV_EDGE_MAX_BTC_AGE_SECONDS` | `3` | Reject stale Chainlink measurements |
 | `FV_EDGE_MAX_REF_DELAY_SECONDS` | `10` | Reject late window references |
+| `BTC_PRICE_SOURCE` | `chainlink` | FV execution price source; Binance is volatility-only |
+| `FV_EDGE_REQUIRE_FAVORITE_SIDE` | `true` | Temporary risk gate requiring selected FV side > 50% |
+| `FV_EDGE_REQUIRE_CHAINLINK` | `true` | Reject entries without same-source Chainlink price/reference |
+| `FV_EDGE_MAX_BOOK_AGE_SECONDS` | `3` | Reject stale CLOB snapshots |
 
 Live mode requires valid Polymarket credentials. The bot refuses mode changes while positions or active orders exist.
 

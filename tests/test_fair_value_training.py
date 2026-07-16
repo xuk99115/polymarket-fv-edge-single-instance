@@ -17,13 +17,14 @@ def test_fv_training_records_window_ref_and_prediction(tmp_path, monkeypatch):
     slug = f"btc-updown-15m-{start_ts}"
     market = {
         "slug": slug,
+        "chainlink_ref_px": 60000.0,
         "end_date": (datetime.fromtimestamp(start_ts, tz=timezone.utc) + timedelta(minutes=15)).isoformat(),
         "outcomes": [
             {"label": "Up", "best_ask": 0.44, "best_bid": 0.43},
             {"label": "Down", "best_ask": 0.58, "best_bid": 0.57},
         ],
     }
-    snapshot = {"price": 60010.0, "sigma_15m": 0.003, "source": "unit", "captured_at": now.isoformat()}
+    snapshot = {"price": 60010.0, "sigma_15m": 0.003, "source": "chainlink_rtds", "captured_at": now.isoformat()}
 
     manager._append_jsonl(TradingBotManager.BTC_TICKS_FILE, {"t": now.isoformat(), "price": snapshot["price"]})
     manager._record_fv_predictions([market], snapshot, now)

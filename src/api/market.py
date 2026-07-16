@@ -21,6 +21,7 @@ except ImportError:
 from ..core.config import Config
 from ..core.utils import extract_market_slug, parse_json_list, safe_float
 from .fair_value import compute_fair_updown, DEFAULT_WINDOW_SEC as _FAIR_WINDOW_SEC, MIN_SIGMA as _FAIR_MIN_SIGMA
+from .chainlink_rtds import ChainlinkRTDSClient
 from .polymarket_ws import PolymarketWSClient, TOP_OF_BOOK_DEPTH
 
 # Legacy BTC 15m scanner support
@@ -245,6 +246,7 @@ class PolymarketClient:
             "slug": slug,
             "question": question or raw_market.get("question") or raw_market.get("title") or raw_market.get("name") or "",
             "end_date": end_date or raw_market.get("endDate"),
+            "event_start_time": raw_market.get("eventStartTime"),
             "active": bool(raw_market.get("active", active if active is not None else True)),
             "closed": bool(raw_market.get("closed", closed if closed is not None else False)),
             "liquidity": safe_float(raw_market.get("liquidity"), liquidity if liquidity is not None else 0.0) or 0.0,
@@ -267,6 +269,38 @@ class PolymarketClient:
             # fv_edge 末段入场永远按全亏结算. 这里从 raw_market 重新解析, 保证类型一致.
             "outcomePrices": parse_json_list(raw_market.get("outcomePrices")),
         }
+
+    async def _attach_chainlink_reference(
+        self, session: aiohttp.ClientSession, market: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Attach Polymarket's official Chainlink opening price when available."""
+        start = market.get("event_start_time")
+        end = market.get("end_date")
+        if not start or not end:
+            return market
+        url = "https://polymarket.com/api/crypto/crypto-price"
+        params = {
+            "symbol": "BTC",
+            "eventStartTime": start,
+            "variant": "fifteen",
+            "endDate": end,
+        }
+        try:
+            async with session.get(
+                url, params=params, headers={**self.headers, "User-Agent": "Mozilla/5.0"},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    return market
+                data = await resp.json()
+            opening = safe_float(data.get("openPrice"))
+            if opening and opening > 0:
+                market["chainlink_ref_px"] = opening
+                market["chainlink_ref_source"] = "polymarket_crypto_price"
+                market["chainlink_ref_captured_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception as exc:
+            logger.debug("Chainlink opening price unavailable for %s: %s", market.get("slug"), exc)
+        return market
 
     def _pick_market_from_event(self, event: Dict[str, Any], slug_hint: str) -> Optional[Dict[str, Any]]:
         markets = [market for market in (event.get("markets") or []) if parse_json_list(market.get("clobTokenIds"))]
@@ -300,7 +334,8 @@ class PolymarketClient:
                 raw_market = await resp.json()
                 if not raw_market or raw_market.get("error"):
                     return None
-                return self._normalize_market(raw_market, slug_hint=slug)
+                market = self._normalize_market(raw_market, slug_hint=slug)
+                return await self._attach_chainlink_reference(session, market) if market else None
         except Exception as exc:
             logger.debug("fetch_market_by_slug %s: %s", slug, exc)
             return None
@@ -324,7 +359,7 @@ class PolymarketClient:
                 market = self._pick_market_from_event(event, slug)
                 if not market:
                     return None
-                return self._normalize_market(
+                normalized = self._normalize_market(
                     market,
                     slug_hint=str(market.get("slug") or slug),
                     question=event.get("title"),
@@ -334,6 +369,7 @@ class PolymarketClient:
                     liquidity=safe_float(event.get("liquidity"), 0.0),
                     neg_risk=event.get("negRisk", False),
                 )
+                return await self._attach_chainlink_reference(session, normalized) if normalized else None
         except Exception as exc:
             logger.debug("fetch_event_by_slug %s: %s", slug, exc)
             return None
@@ -474,9 +510,24 @@ class PolymarketClient:
             result = await self._get_microstructure_rest(market)
             source = result.get("source", "none")
 
+        if source == "ws":
+            max_age = Config.get_float("FV_EDGE_MAX_BOOK_AGE_SECONDS", "3")
+            observed_values = [item.get("updated_at") for item in result.get("outcomes", [])]
+            observed_values = [float(value) for value in observed_values if isinstance(value, (int, float))]
+            if max_age > 0 and observed_values:
+                oldest_age = time.time() - min(observed_values)
+                if oldest_age > max_age:
+                    logger.debug("WS order book stale by %.2fs, falling back to REST", oldest_age)
+                    result = await self._get_microstructure_rest(market)
+                    source = result.get("source", "none")
         result["source"] = source
         result["fetch_started_at"] = started_at.isoformat()
-        result["observed_at"] = datetime.now(timezone.utc).isoformat()
+        updated = [item.get("updated_at") for item in result.get("outcomes", [])]
+        updated = [float(value) for value in updated if isinstance(value, (int, float))]
+        if updated:
+            result["observed_at"] = datetime.fromtimestamp(min(updated), tz=timezone.utc).isoformat()
+        else:
+            result["observed_at"] = datetime.now(timezone.utc).isoformat()
         result["fetch_latency_ms"] = round((time.perf_counter() - started_mono) * 1000.0, 1)
         return result
 
@@ -560,6 +611,7 @@ class PolymarketClient:
                 "token_id": token_id,
                 "bids": bids,
                 "asks": asks,
+                "updated_at": snap.get("updated_at"),
             })
         return {"outcomes": result, "source": "ws" if result else "none"}
 
@@ -567,15 +619,24 @@ class PolymarketClient:
 class BTCDataprovider:
     """Optional BTC price feed kept for dashboard/reference use."""
 
+    def __init__(self):
+        self._chainlink = ChainlinkRTDSClient()
+
     async def get_price(self) -> Optional[Dict[str, Any]]:
-        source = Config.get("BTC_PRICE_SOURCE", "binance")
+        source = "chainlink" if Config.get_bool("FV_EDGE_REQUIRE_CHAINLINK", "true") else Config.get("BTC_PRICE_SOURCE", "chainlink")
+        if source == "chainlink":
+            return await self._get_chainlink_price()
         if source == "binance":
             return await self._get_binance_price()
         return await self._get_coingecko_price()
 
     async def get_signal_context(self, market_end_utc=None) -> Optional[Dict[str, Any]]:
-        source = Config.get("BTC_PRICE_SOURCE", "binance")
+        source = "chainlink" if Config.get_bool("FV_EDGE_REQUIRE_CHAINLINK", "true") else Config.get("BTC_PRICE_SOURCE", "chainlink")
         if source == "binance":
+            ctx = await self._get_binance_signal_context()
+        elif source == "chainlink":
+            # Binance remains a volatility-only input; its price never enters
+            # FV when Chainlink is the configured execution source.
             ctx = await self._get_binance_signal_context()
         else:
             ctx = await self.get_price()
@@ -585,6 +646,14 @@ class BTCDataprovider:
             pass
 
         return ctx
+
+    async def _get_chainlink_price(self) -> Optional[Dict[str, Any]]:
+        """Return only a fresh Chainlink measurement; never fall back to spot."""
+        tick = await self._chainlink.get_latest()
+        if not tick:
+            logger.warning("Chainlink price unavailable; FV entries remain disabled")
+            return None
+        return tick
 
     # 代理池: 支持多个 SOCKS5 端口轮询, 失败剔除
     # .env 配置: BINANCE_PROXY_URLS=socks5://127.0.0.1:10808,socks5://127.0.0.1:10908,...

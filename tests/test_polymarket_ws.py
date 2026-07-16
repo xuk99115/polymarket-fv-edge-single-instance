@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import unittest
 from typing import Any, Dict, List, Optional
 
@@ -563,7 +564,7 @@ class _StubWS:
         self._snapshots[token_id] = {
             "bids": list(bids),
             "asks": list(asks),
-            "updated_at": 0.0,
+            "updated_at": time.time(),
         }
 
 
