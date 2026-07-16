@@ -36,6 +36,7 @@ CLOSED_TRADE_STATUSES = {
     "SETTLED",
     "FILLED",
 }
+_JSONL_ERROR_LOGGED_AT: Dict[str, float] = {}
 
 
 def _market_settled(market: Dict[str, Any]) -> bool:
@@ -98,9 +99,12 @@ class TradingBotManager:
         self.fv_edge = FVEdgeStrategy(
             position_usd=Config.get_float("FV_EDGE_POSITION_USD", "2.0"),
             threshold_bps=Config.get_float("FV_EDGE_THRESHOLD_BPS", "300"),
-            max_mte=Config.get_float("FV_EDGE_MAX_MTE", "2.0"),
+            max_mte=Config.get_float("FV_EDGE_MAX_MTE", "1.5"),
             min_price=Config.get_float("FV_EDGE_MIN_PRICE", "0.10"),
             max_price=Config.get_float("FV_EDGE_MAX_PRICE", "0.85"),
+            require_favorite_side=Config.get_bool("FV_EDGE_REQUIRE_FAVORITE_SIDE", "true"),
+            require_chainlink=Config.get_bool("FV_EDGE_REQUIRE_CHAINLINK", "true"),
+            max_book_age_seconds=Config.get_float("FV_EDGE_MAX_BOOK_AGE_SECONDS", "3"),
         )
 
         requested_mode = self._requested_mode()
@@ -131,6 +135,9 @@ class TradingBotManager:
 
     def _create_executor(self, mode: str):
         if mode != "live":
+            return PaperExecutor(self.state_manager)
+        if not Config.get_bool("FV_EDGE_ENABLE_LIVE", "false"):
+            logger.error("FV Edge live mode disabled: settlement/redeem lifecycle is not implemented")
             return PaperExecutor(self.state_manager)
         try:
             return LiveExecutor(self.state_manager)
@@ -338,6 +345,7 @@ class TradingBotManager:
             return None
 
         fresh_market = market
+        signal_to_execute = signal
         if self.current_mode == "live":
             fetched = await self.market_api.get_market(slug)
             if not fetched:
@@ -347,12 +355,23 @@ class TradingBotManager:
             outcomes = fresh_market.get("outcomes") or []
             if outcome_index >= len(outcomes):
                 return None
+            # Re-run the complete FV decision on the fresh BTC, tau and book;
+            # an ask-only drift check cannot detect a changed fair value.
+            if self._latest_btc:
+                self.fv_edge.update_btc_snapshot(self._latest_btc, self._btc_window_refs)
+                refreshed = self.fv_edge.scan([fresh_market], now_utc)
+                signal_to_execute = next(
+                    (item for item in refreshed if item.get("outcome_index") == outcome_index),
+                    None,
+                )
+                if signal_to_execute is None:
+                    return None
 
         outcome = outcomes[outcome_index]
         ask = safe_float(outcome.get("best_ask"))
         if ask is None or not self.fv_edge.accepts_price(ask):
             return None
-        signal_ask = safe_float(signal.get("current_ask"), ask) or ask
+        signal_ask = safe_float(signal_to_execute.get("current_ask"), ask) or ask
         max_drift = Config.get_float("FV_EDGE_MAX_ASK_DRIFT", "0.01")
         if self.current_mode == "live" and ask > signal_ask + max_drift:
             return None
@@ -366,7 +385,7 @@ class TradingBotManager:
         }
         result = await self.executor.open_position(
             fresh_market,
-            signal,
+            signal_to_execute,
             ask,
             outcome.get("label", f"Outcome {outcome_index}"),
             quote,
@@ -390,14 +409,14 @@ class TradingBotManager:
                 "outcome_index": outcome_index,
                 "outcome_label": outcome.get("label"),
                 "entry_price": ask,
-                "amount": signal.get("stake"),
-                "fair_up": signal.get("fair_up"),
-                "edge_bps": signal.get("edge_bps"),
-                "ref_px": signal.get("ref_px"),
+                "amount": signal_to_execute.get("stake"),
+                "fair_up": signal_to_execute.get("fair_up"),
+                "edge_bps": signal_to_execute.get("edge_bps"),
+                "ref_px": signal_to_execute.get("ref_px"),
                 "strategy": "fv_edge",
             },
         )
-        self._record_signal_history(signal, fresh_market, result, now_utc)
+        self._record_signal_history(signal_to_execute, fresh_market, result, now_utc)
         self._refresh_summary()
         return result
 
@@ -488,10 +507,19 @@ class TradingBotManager:
         self.state_manager.save()
 
     @staticmethod
-    def _append_jsonl(path: str, event: Dict[str, Any]) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as file:
-            file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    def _append_jsonl(path: str, event: Dict[str, Any]) -> bool:
+        """Best-effort telemetry write; never abort a trading cycle."""
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a", encoding="utf-8") as file:
+                file.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+            return True
+        except OSError as exc:
+            now = time.monotonic()
+            if now - _JSONL_ERROR_LOGGED_AT.get(path, 0.0) >= 30.0:
+                logger.error("telemetry append failed path=%s: %s", path, exc)
+                _JSONL_ERROR_LOGGED_AT[path] = now
+            return False
 
     @staticmethod
     def _slug_start_dt(slug: str) -> Optional[datetime]:
@@ -505,20 +533,34 @@ class TradingBotManager:
     ) -> Optional[Dict[str, Any]]:
         slug = str(market.get("slug", ""))
         existing = self._btc_window_refs.get(slug)
-        if existing and safe_float(existing.get("ref_px")):
+        if existing and existing.get("source") == "chainlink" and safe_float(existing.get("ref_px")):
             return existing
         start = self._slug_start_dt(slug)
-        if not start or now_utc < start or price <= 0:
+        if not start or now_utc < start:
             return None
         delay = (now_utc - start).total_seconds()
         max_delay = Config.get_float("FV_EDGE_MAX_REF_DELAY_SECONDS", "10")
+        official_ref = safe_float(market.get("chainlink_ref_px"))
+        if Config.get_bool("FV_EDGE_REQUIRE_CHAINLINK", "true") and not official_ref:
+            return None
+        if official_ref:
+            ref_px = official_ref
+            source = "chainlink"
+            late_ref = False
+        else:
+            if price <= 0:
+                return None
+            ref_px = price
+            source = self._latest_btc.get("source", "btc_spot")
+            late_ref = delay > max_delay
         ref = {
             "window_start": start.isoformat(),
             "window_end": market.get("end_date"),
-            "ref_px": round(price, 2),
+            "ref_px": round(ref_px, 8),
             "captured_at": now_utc.isoformat(),
-            "source": self._latest_btc.get("source", "btc_spot"),
-            "late_ref": delay > max_delay,
+            "measurement_at": start.isoformat() if source == "chainlink" else now_utc.isoformat(),
+            "source": source,
+            "late_ref": late_ref,
             "delay_seconds": round(delay, 3),
         }
         self._btc_window_refs[slug] = ref
@@ -581,6 +623,18 @@ class TradingBotManager:
                     "fair_down": round(1 - fair_up, 4),
                     "market_up_ask": up_ask,
                     "market_down_ask": down_ask,
+                    "market_up_bid": safe_float(outcomes[0].get("best_bid")) if len(outcomes) > 0 else None,
+                    "market_down_bid": safe_float(outcomes[1].get("best_bid")) if len(outcomes) > 1 else None,
+                    "quote_source_up": outcomes[0].get("quote_source") if len(outcomes) > 0 else None,
+                    "quote_source_down": outcomes[1].get("quote_source") if len(outcomes) > 1 else None,
+                    "book_observed_at": market.get("book_observed_at"),
+                    "book_fetch_latency_ms": market.get("book_fetch_latency_ms"),
+                    "btc_source": btc.get("source"),
+                    "btc_captured_at": btc.get("captured_at"),
+                    "btc_fetched_at": btc.get("fetched_at"),
+                    "btc_cache_age_secs": btc.get("cache_age_secs"),
+                    "ref_source": (ref or {}).get("source"),
+                    "ref_measurement_at": (ref or {}).get("measurement_at"),
                     "edge_up_bps": round((fair_up - up_ask) * 10000, 2) if up_ask else None,
                     "edge_down_bps": round(((1 - fair_up) - down_ask) * 10000, 2) if down_ask else None,
                     "late_ref": bool((ref or {}).get("late_ref")),
@@ -604,10 +658,20 @@ class TradingBotManager:
                 spot = await self.btc_api.get_price()
                 if spot and safe_float(spot.get("price")):
                     btc = {**signal_context, **spot}
-                    btc["captured_at"] = now_utc.isoformat()
-                    btc["cache_age_secs"] = 0
+                    measurement_at = spot.get("captured_at") or spot.get("measurement_at")
+                    if not measurement_at:
+                        measurement_at = now_utc.isoformat()
+                    btc["captured_at"] = measurement_at
+                    btc["fetched_at"] = now_utc.isoformat()
+                    try:
+                        btc["cache_age_secs"] = max(
+                            0.0, (now_utc - iso_to_utc_dt(measurement_at)).total_seconds()
+                        )
+                    except (TypeError, ValueError):
+                        btc["cache_age_secs"] = 9999.0
                     price = float(btc["price"])
-                    self._btc_history.append({"ts": now_utc.timestamp(), "price": price})
+                    history_ts = iso_to_utc_dt(measurement_at).timestamp()
+                    self._btc_history.append({"ts": history_ts, "price": price})
                     self._btc_history = self._btc_history[-600:]
                     sigma = self._estimate_sigma_from_history() or safe_float(
                         signal_context.get("sigma_15m")
@@ -621,7 +685,12 @@ class TradingBotManager:
                         self._ensure_window_ref(market, price, now_utc)
                     self._append_jsonl(
                         self.BTC_TICKS_FILE,
-                        {"t": now_utc.isoformat(), "price": round(price, 2), "source": btc.get("source")},
+                        {
+                            "t": now_utc.isoformat(),
+                            "measurement_at": measurement_at,
+                            "price": round(price, 2),
+                            "source": btc.get("source"),
+                        },
                     )
                     save_json_file(self.BTC_SNAPSHOT_FILE, btc)
             except asyncio.CancelledError:
@@ -657,7 +726,7 @@ class TradingBotManager:
                 )
             except (TypeError, ValueError):
                 btc["cache_age_secs"] = 9999
-        max_btc_age = Config.get_int("FV_EDGE_MAX_BTC_AGE_SECONDS", "10")
+        max_btc_age = Config.get_int("FV_EDGE_MAX_BTC_AGE_SECONDS", "3")
         if trading_enabled and btc and btc.get("cache_age_secs", 9999) <= max_btc_age:
             self.fv_edge.update_btc_snapshot(btc, window_refs=self._btc_window_refs)
             signals = self.fv_edge.scan(markets, now_utc)
@@ -671,6 +740,8 @@ class TradingBotManager:
                     messages.append(result)
 
         self._record_fv_predictions(markets, btc, now_utc)
+        # Persist position/trade state before publishing the status snapshot.
+        self.state_manager.flush()
         focus = min(
             markets,
             key=lambda market: market.get("end_date") or "9999",

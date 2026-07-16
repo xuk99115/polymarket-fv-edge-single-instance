@@ -1,5 +1,6 @@
 import json
 import os
+import errno
 from datetime import datetime, timezone
 from typing import Optional, Any
 
@@ -22,9 +23,11 @@ def save_json_file(path: str, data: Any):
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except Exception:
-                # fsync 不可用（部分文件系统）不致命，跳过
-                pass
+            except OSError as exc:
+                # Some FUSE filesystems do not implement fsync; real I/O
+                # errors must still abort the atomic write and be visible.
+                if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                    raise
         os.replace(tmp_path, path)
     except Exception:
         # 清理临时文件，避免堆积

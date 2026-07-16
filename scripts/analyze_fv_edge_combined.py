@@ -44,8 +44,13 @@ def load():
     return enriched
 
 
-def pick_per_slug(rows, target_mte):
-    """For each slug, pick the row nearest-but-not-after target_mte."""
+def pick_per_slug(rows, target_mte, edge_thr=0, variant="v1"):
+    """Replay the first eligible row inside the production MTE window.
+
+    Rows are ordered from the start of the entry window toward expiry. There
+    is deliberately no out-of-window fallback: production never trades a
+    market before the configured window or after it has expired.
+    """
     by_slug = defaultdict(list)
     for r in rows:
         by_slug[r["slug"]].append(r)
@@ -54,33 +59,71 @@ def pick_per_slug(rows, target_mte):
         slug_rows.sort(key=lambda x: x.get("minutes_to_end", 0), reverse=True)
         chosen = None
         for r in slug_rows:
-            if r.get("minutes_to_end", 0) <= target_mte:
-                chosen = r
-                break
-        if chosen is None and slug_rows:
-            chosen = min(slug_rows, key=lambda x: abs(x.get("minutes_to_end", 0) - target_mte))
+            mte = r.get("minutes_to_end")
+            if mte is None or not 0 < mte <= target_mte:
+                continue
+            if not _variant_allows(r, edge_thr, variant):
+                continue
+            chosen = r
+            break
         if chosen:
             picked.append(chosen)
     return picked
 
 
-def edge_trade(r, edge_thr_bps):
-    """Return (won, pnl) or None if no edge."""
-    edge = r.get("edge_up_bps")
-    if edge is None or abs(edge) < edge_thr_bps:
-        return None
-    market_up_ask = r.get("market_up_ask")
+def edge_trade(r, edge_thr_bps, stake=1.0):
+    """Return a fixed-stake trade using both executable asks."""
+    fair_up = r.get("fair_up")
+    up_ask = r.get("market_up_ask")
+    down_ask = r.get("market_down_ask")
     resolved = r.get("resolved_up")
-    if market_up_ask is None or resolved is None:
+    if fair_up is None or up_ask is None or down_ask is None or resolved is None:
         return None
-    if edge > 0:
-        buy_price = market_up_ask
-        won = (resolved == 1)
-    else:
-        buy_price = 1.0 - market_up_ask
-        won = (resolved == 0)
-    pnl = (1.0 - buy_price) if won else -buy_price
-    return {"won": won, "pnl": pnl, "buy_price": buy_price}
+    fair_down = 1.0 - fair_up
+    edge_up = (fair_up - up_ask) * 10000.0
+    edge_down = (fair_down - down_ask) * 10000.0
+    edge, outcome_index, outcome_label, buy_price = max(
+        (edge_up, 0, "Up", up_ask),
+        (edge_down, 1, "Down", down_ask),
+        key=lambda item: item[0],
+    )
+    if edge < edge_thr_bps or buy_price <= 0:
+        return None
+    won = resolved == (1 if outcome_index == 0 else 0)
+    shares = stake / buy_price
+    pnl = stake * ((1.0 - buy_price) / buy_price) if won else -stake
+    return {
+        "won": won,
+        "pnl": pnl,
+        "stake": stake,
+        "buy_price": buy_price,
+        "shares": shares,
+        "edge_bps": edge,
+        "outcome_index": outcome_index,
+        "outcome_label": outcome_label,
+        "fair_selected": fair_up if outcome_index == 0 else fair_down,
+        "fair_up": fair_up,
+        "fair_down": fair_down,
+    }
+
+
+def _variant_allows(r, edge_thr, variant):
+    t = edge_trade(r, edge_thr)
+    if not t:
+        return False
+    if variant in {"v2", "v6"} and t["fair_selected"] <= 0.5:
+        return False
+    if variant in {"v4", "v6"} and r.get("minutes_to_end", 0) > 2.0:
+        return False
+    if variant == "v3":
+        z = r.get("fair_z_score", 0) or 0
+        if (t["outcome_index"] == 0 and z < 1.0) or (t["outcome_index"] == 1 and z > -1.0):
+            return False
+    if variant == "v5":
+        fair = t["fair_selected"]
+        if 0.2 <= fair < 0.3 or 0.4 <= fair < 0.5 or 0.9 <= fair <= 1.0:
+            return False
+    return True
 
 
 def stats(trades):
@@ -89,7 +132,7 @@ def stats(trades):
     n = len(trades)
     wins = sum(1 for t in trades if t["won"])
     total_pnl = sum(t["pnl"] for t in trades)
-    invested = sum(t["buy_price"] for t in trades)
+    invested = sum(t.get("stake", 1.0) for t in trades)
     return {
         "trades": n,
         "win_rate": round(wins / n * 100, 2),
@@ -114,15 +157,8 @@ def variant_v2_edge_and_fv_agrees(picked, edge_thr):
         t = edge_trade(r, edge_thr)
         if not t:
             continue
-        fair = r.get("fair_up")
-        market = r.get("market_up_ask")
-        edge = r.get("edge_up_bps")
-        if fair is None or market is None:
-            continue
-        # Long UP: need FV bullish (fair > 0.5). Long DOWN: need FV bearish (fair < 0.5).
-        if edge > 0 and fair > 0.5:
-            trades.append(t)
-        elif edge < 0 and fair < 0.5:
+        # Only buy the model-favorite side in the temporary V2 risk variant.
+        if t["fair_selected"] > 0.5:
             trades.append(t)
     return trades
 
@@ -135,10 +171,7 @@ def variant_v3_edge_and_strong_fv(picked, edge_thr, z_min=1.0):
         if not t:
             continue
         z = r.get("fair_z_score", 0) or 0
-        edge = r.get("edge_up_bps")
-        if edge > 0 and z >= z_min:
-            trades.append(t)
-        elif edge < 0 and z <= -z_min:
+        if (t["outcome_index"] == 0 and z >= z_min) or (t["outcome_index"] == 1 and z <= -z_min):
             trades.append(t)
     return trades
 
@@ -164,9 +197,7 @@ def variant_v5_calibration_discount(picked, edge_thr):
         t = edge_trade(r, edge_thr)
         if not t:
             continue
-        fair = r.get("fair_up")
-        if fair is None:
-            continue
+        fair = t["fair_selected"]
         # FV calibration bad buckets: 0.2-0.3, 0.4-0.5, 0.9-1.0
         bad = (0.2 <= fair < 0.3) or (0.4 <= fair < 0.5) or (0.9 <= fair <= 1.0)
         if bad:
@@ -184,13 +215,7 @@ def variant_v6_edge_and_strong_fv_strict(picked, edge_thr):
         t = edge_trade(r, edge_thr)
         if not t:
             continue
-        fair = r.get("fair_up")
-        edge = r.get("edge_up_bps")
-        if fair is None:
-            continue
-        if edge > 0 and fair > 0.5:
-            trades.append(t)
-        elif edge < 0 and fair < 0.5:
+        if t["fair_selected"] > 0.5:
             trades.append(t)
     return trades
 
@@ -199,17 +224,16 @@ def main():
     rows = load()
     print(f"Loaded {len(rows)} rows, {len(set(r['slug'] for r in rows))} unique slugs")
 
-    picked = pick_per_slug(rows, target_mte=1.0)
-    print(f"Picked {len(picked)} per-slug decisions (target mte=1.0)")
+    target_mte = 1.5
 
     results = {}
     for edge_thr in [100, 300, 500, 700]:
-        v1 = variant_v1_edge_only(picked, edge_thr)
-        v2 = variant_v2_edge_and_fv_agrees(picked, edge_thr)
-        v3 = variant_v3_edge_and_strong_fv(picked, edge_thr)
-        v4 = variant_v4_edge_and_low_mte(picked, edge_thr)
-        v5 = variant_v5_calibration_discount(picked, edge_thr)
-        v6 = variant_v6_edge_and_strong_fv_strict(picked, edge_thr)
+        v1 = variant_v1_edge_only(pick_per_slug(rows, target_mte, edge_thr, "v1"), edge_thr)
+        v2 = variant_v2_edge_and_fv_agrees(pick_per_slug(rows, target_mte, edge_thr, "v2"), edge_thr)
+        v3 = variant_v3_edge_and_strong_fv(pick_per_slug(rows, target_mte, edge_thr, "v3"), edge_thr)
+        v4 = variant_v4_edge_and_low_mte(pick_per_slug(rows, target_mte, edge_thr, "v4"), edge_thr)
+        v5 = variant_v5_calibration_discount(pick_per_slug(rows, target_mte, edge_thr, "v5"), edge_thr)
+        v6 = variant_v6_edge_and_strong_fv_strict(pick_per_slug(rows, target_mte, edge_thr, "v6"), edge_thr)
 
         results[f"edge{edge_thr}_bps"] = {
             "V1_edge_only": stats(v1),
@@ -220,7 +244,7 @@ def main():
             "V6_edge+FV_agrees+mte<=2": stats(v6),
         }
 
-    print(f"\n--- COMBINED STRATEGY COMPARISON (target mte=1.0) ---")
+    print(f"\n--- COMBINED STRATEGY COMPARISON (first eligible, max mte={target_mte}) ---")
     print(f"{'edge':<6} {'variant':<28} {'trades':>6} {'win%':>6} {'ROI%':>8}")
     for edge_thr in [100, 300, 500, 700]:
         key = f"edge{edge_thr}_bps"

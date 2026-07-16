@@ -7,7 +7,7 @@ def make_market(now, *, up_ask=0.55, down_ask=0.45):
     start = int((now - timedelta(minutes=13)).timestamp())
     return {
         "slug": f"btc-updown-15m-{start}",
-        "end_date": (now + timedelta(minutes=2)).isoformat(),
+        "end_date": (now + timedelta(minutes=1)).isoformat(),
         "outcomes": [
             {"index": 0, "label": "Up", "best_bid": up_ask - 0.01, "best_ask": up_ask, "quote_source": "clob"},
             {"index": 1, "label": "Down", "best_bid": down_ask - 0.01, "best_ask": down_ask, "quote_source": "clob"},
@@ -17,8 +17,13 @@ def make_market(now, *, up_ask=0.55, down_ask=0.45):
 
 def update_strategy(strategy, market, *, price=100000, sigma=0.003, late_ref=False):
     strategy.update_btc_snapshot(
-        {"price": price, "sigma_15m": sigma, "captured_at": datetime.now(timezone.utc).isoformat()},
-        {market["slug"]: {"ref_px": 100000, "late_ref": late_ref}},
+        {
+            "price": price,
+            "sigma_15m": sigma,
+            "source": "chainlink_rtds",
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+        },
+        {market["slug"]: {"ref_px": 100000, "source": "chainlink", "late_ref": late_ref}},
     )
 
 
@@ -42,6 +47,38 @@ def test_down_edge_uses_fair_down_minus_down_ask():
     expected = (1.0 - signal["fair_up"] - 0.2) * 10000
     assert abs(signal["edge_down_bps"] - expected) < 1.0
     assert signal["edge_bps"] == signal["edge_down_bps"]
+
+
+def test_non_favorite_side_is_rejected_even_with_positive_edge():
+    now = datetime.now(timezone.utc)
+    market = make_market(now, up_ask=0.9, down_ask=0.1)
+    strategy = FVEdgeStrategy(threshold_bps=500)
+    update_strategy(strategy, market, price=100100)
+
+    assert strategy.scan([market], now) == []
+
+
+def test_favorite_side_with_positive_edge_is_accepted():
+    now = datetime.now(timezone.utc)
+    market = make_market(now, up_ask=0.7, down_ask=0.4)
+    strategy = FVEdgeStrategy(threshold_bps=500)
+    update_strategy(strategy, market, price=100100)
+
+    signal = strategy.scan([market], now)[0]
+    assert signal["outcome_label"] == "Up"
+    assert signal["fair_selected"] > 0.5
+
+
+def test_binance_current_price_is_rejected_in_chainlink_mode():
+    now = datetime.now(timezone.utc)
+    market = make_market(now, up_ask=0.7, down_ask=0.4)
+    strategy = FVEdgeStrategy(threshold_bps=500)
+    strategy.update_btc_snapshot(
+        {"price": 100100, "sigma_15m": 0.003, "source": "binance"},
+        {market["slug"]: {"ref_px": 100000, "source": "chainlink"}},
+    )
+
+    assert strategy.scan([market], now) == []
 
 
 def test_late_window_reference_is_rejected():

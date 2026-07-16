@@ -1,15 +1,14 @@
 """FV Edge strategy for BTC 15-minute UP/DOWN markets.
 
-Strategy logic (V2 from analyze_fv_edge_combined.py 2026-07-10):
+Strategy logic (V2 risk-gated FV Edge):
   1. For each BTC 15m window with current mte <= FV_EDGE_MAX_MTE:
      a. Compute fair_up from BTC price + ref_px + sigma_15m + tau_sec
      b. Compute independent UP and DOWN edges against each side's ask
-     c. Buy the side with the largest positive edge above the threshold
+     c. Buy the side with the largest positive edge above the threshold, but
+        require the selected side to remain the model favorite by default
 
-Baseline (paper backtest, 31 windows, target mte=1.0):
-  V2 edge>=3% + FV agrees: 14 trades, 64.3% win, +47.30% ROI
-  V2 edge>=5% + FV agrees: 17 trades, 70.6% win, +39.21% ROI
-  V2 edge>=7% + FV agrees: 14 trades, 64.3% win, +47.30% ROI
+Backtest results are intentionally not embedded here; replay must use the
+same first-eligible event and both executable asks as production.
 
 Signals are consumed directly by the FV-only trading manager and held to expiry.
 """
@@ -24,9 +23,12 @@ logger = logging.getLogger("fv_edge")
 
 # Tunables (validated 2026-07-10 by scripts/analyze_fv_edge_combined.py)
 FV_EDGE_THRESHOLD_BPS = 300       # 3% minimum edge to act
-FV_EDGE_MAX_MTE = 2.0             # only enter in last 2 minutes of window
+FV_EDGE_MAX_MTE = 1.5             # temporary risk valve: last 1.5 minutes
 FV_EDGE_MIN_PRICE = 0.10          # avoid illiquid penny trades
 FV_EDGE_MAX_PRICE = 0.85          # avoid 90c+ late bias zone
+FV_EDGE_REQUIRE_FAVORITE_SIDE = True
+FV_EDGE_REQUIRE_CHAINLINK = True
+FV_EDGE_MAX_BOOK_AGE_SECONDS = 3.0
 
 # Default position size in USDC.
 FV_EDGE_DEFAULT_POSITION_USD = 2.0
@@ -64,6 +66,9 @@ class FVEdgeStrategy:
         max_mte: float = FV_EDGE_MAX_MTE,
         min_price: float = FV_EDGE_MIN_PRICE,
         max_price: float = FV_EDGE_MAX_PRICE,
+        require_favorite_side: bool = FV_EDGE_REQUIRE_FAVORITE_SIDE,
+        require_chainlink: bool = FV_EDGE_REQUIRE_CHAINLINK,
+        max_book_age_seconds: float = FV_EDGE_MAX_BOOK_AGE_SECONDS,
     ) -> None:
         self.last_scan_at: Optional[datetime] = None
         self.last_btc_snap: Optional[Dict[str, Any]] = None
@@ -73,6 +78,9 @@ class FVEdgeStrategy:
         self._max_mte = max(0.0, float(max_mte))
         self._min_price = max(0.0, float(min_price))
         self._max_price = min(1.0, float(max_price))
+        self._require_favorite_side = bool(require_favorite_side)
+        self._require_chainlink = bool(require_chainlink)
+        self._max_book_age_seconds = max(0.0, float(max_book_age_seconds))
         self.signals_emitted = 0           # total BUY signals ever produced
         self.last_evaluation_count = 0     # markets evaluated in last scan
         self.last_qualifying_count = 0     # markets that passed edge filter
@@ -116,6 +124,8 @@ class FVEdgeStrategy:
         btc_price = btc.get("price")
         if btc_price is None or btc_price <= 0:
             return signals
+        if self._require_chainlink and btc.get("source") != "chainlink_rtds":
+            return signals
         sigma_15m = btc.get("sigma_15m")
         try:
             sigma_15m = float(sigma_15m)
@@ -141,9 +151,14 @@ class FVEdgeStrategy:
                 not ref_override or ref_record.get("late_ref")
             ):
                 continue
-            market_ref = market.get("ref_px") or ref_override or global_ref_px
+            market_ref = ref_override or market.get("chainlink_ref_px") or market.get("ref_px") or global_ref_px
             sig = self._evaluate_market(
-                market, now_utc, btc_price, market_ref, sigma_15m,
+                market,
+                now_utc,
+                btc_price,
+                market_ref,
+                sigma_15m,
+                ref_source=ref_record.get("source") or market.get("chainlink_ref_source"),
             )
             if sig is not None:
                 signals.append(sig)
@@ -158,6 +173,8 @@ class FVEdgeStrategy:
         btc_price: float,
         ref_px: float,
         sigma_15m: float,
+        *,
+        ref_source: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         slug = market.get("slug", "")
         if not slug.startswith("btc-updown-15m-"):
@@ -176,6 +193,8 @@ class FVEdgeStrategy:
         minutes_to_end = tau_sec / 60.0
         if minutes_to_end > self._max_mte:
             return None
+        if self._require_chainlink and ref_source not in {"chainlink", "polymarket_crypto_price"}:
+            return None
 
         outcomes = market.get("outcomes", [])
         if len(outcomes) < 2:
@@ -186,6 +205,17 @@ class FVEdgeStrategy:
         # 只使用 CLOB 实时盘口, 跳过 gamma mid fallback (可能过期或无真实流动性)
         if up_qsrc != "clob" or down_qsrc != "clob":
             return None
+        observed_at = market.get("book_observed_at")
+        if observed_at and self._max_book_age_seconds > 0:
+            try:
+                age = (
+                    now_utc
+                    - datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+                ).total_seconds()
+            except (TypeError, ValueError):
+                return None
+            if age < 0 or age > self._max_book_age_seconds:
+                return None
         up_ask = float(up.get("best_ask") or 0)
         up_bid = float(up.get("best_bid") or 0)
         down_ask = float(down.get("best_ask") or 0)
@@ -213,6 +243,10 @@ class FVEdgeStrategy:
 
         # Price range filter
         if not (self._min_price <= buy_price <= self._max_price):
+            return None
+
+        selected_fair = fair_up if outcome_index == 0 else fair_down
+        if self._require_favorite_side and selected_fair <= 0.5:
             return None
 
         # Signal strength: base 0.5 + edge_bps / scale, capped.
@@ -248,6 +282,9 @@ class FVEdgeStrategy:
             "edge_bps": round(edge_bps, 1),
             "edge_up_bps": round(edge_up_bps, 1),
             "edge_down_bps": round(edge_down_bps, 1),
+            "fair_selected": round(selected_fair, 4),
+            "btc_source": self.last_btc_snap.get("source") if self.last_btc_snap else None,
+            "ref_source": ref_source,
             "mte_minutes": round(minutes_to_end, 2),
         }
 
