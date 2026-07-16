@@ -468,9 +468,9 @@ export function renderTrades(trades) {
                 }
             }
         }
-        // 过滤: 隐藏 executor 生成的 SELL 记录 (side=SELL, outcome=null)
+        // 过滤: 隐藏 executor 生成的平仓 SELL 记录 (id 以 trade-close- 开头)
         // 它们跟 BUY 记录重复, 双重计算 PnL.
-        if (t.side === 'SELL' && !t.outcome && !isOpenAction) {
+        if (String(t.id || '').startsWith('trade-close-') && !isOpenAction) {
             return '';
         }
 
