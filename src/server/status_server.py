@@ -187,7 +187,7 @@ def _build_balance_payload(ctx: dict, state: dict) -> dict:
         except Exception:
             pass
     return {
-        "balance": summary.get("ending_balance", float(_instance_env(ctx, _load_control_for_instance(ctx), "PAPER_START_BALANCE", "100"))),
+        "balance": summary.get("cash_balance", summary.get("ending_balance", float(_instance_env(ctx, _load_control_for_instance(ctx), "PAPER_START_BALANCE", "100")))),
         "wallet": state.get("wallet") or _instance_env(ctx, _load_control_for_instance(ctx), "PAPER_WALLET_LABEL", "LOCAL-SIM"),
         "source": "paper_live",
         "cash_balance": summary.get("cash_balance"),
@@ -234,7 +234,7 @@ def _build_config_payload(ctx: dict, state: dict, bot_status: dict) -> dict:
         "paper_losing_trades": summary.get("losing_trades"),
         "paper_profit": report.get("profit"),
         "paper_roi_percent": report.get("roi_percent"),
-        "paper_balance": summary.get("ending_balance"),
+        "paper_balance": summary.get("cash_balance", summary.get("ending_balance")),
         "paper_session_started_at": state.get("session_started_at") or summary.get("session_started_at") or report.get("session_started_at"),
         "FV_EDGE_THRESHOLD_BPS": _instance_env(ctx, control, "FV_EDGE_THRESHOLD_BPS", "300"),
         "FV_EDGE_MAX_MTE": _instance_env(ctx, control, "FV_EDGE_MAX_MTE", "1.5"),
@@ -770,7 +770,7 @@ class StatusHandler(http.server.SimpleHTTPRequestHandler):
                 "paper_result": report.get("result"),
                 "paper_profit": report.get("profit"),
                 "paper_roi_percent": report.get("roi_percent"),
-                "paper_balance": summary.get("ending_balance"),
+                "paper_balance": summary.get("cash_balance", summary.get("ending_balance")),
                 "paper_session_started_at": state.get("session_started_at") or summary.get("session_started_at") or report.get("session_started_at"),
                 "cash_balance": summary.get("cash_balance"),
                 "reserved_balance": summary.get("reserved_balance"),
