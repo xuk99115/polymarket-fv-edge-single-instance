@@ -195,6 +195,13 @@ def _build_config_payload(ctx: dict, state: dict, bot_status: dict) -> dict:
     report = state.get("report", {})
     summary = state.get("summary", {})
     control = _load_control_for_instance(ctx)
+    # 优先用独立 summary 快照（避免读到不完整的 state file）
+    state_file = ctx.get("state_file", "")
+    summary_file = os.path.join(os.path.dirname(state_file), "state_summary.json") if state_file else ""
+    if summary_file and os.path.exists(summary_file):
+        snap = load_json_file(summary_file, None)
+        if snap:
+            summary = snap
     return {
         "instance_key": ctx.get("key"),
         "instance_label": ctx.get("label"),
