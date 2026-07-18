@@ -173,17 +173,14 @@ def _build_positions_from_trades(trades: list) -> list:
 
 
 def _build_balance_payload(ctx: dict, state: dict) -> dict:
-    summary = state.get("summary", {})
-    # 优先用独立 summary 快照（避免读到不完整的 state file）
+    # 只用独立 summary 快照，不读 state.summary
     state_file = ctx.get("state_file", "")
     summary_file = os.path.join(os.path.dirname(state_file), "state_summary.json") if state_file else ""
+    summary = {}
     if summary_file and os.path.exists(summary_file):
-        # 直接读快照，不走 copy 逻辑（overlay copy2 可能失败）
         try:
             with open(summary_file, "r", encoding="utf-8") as f:
-                snap = json.load(f)
-            if snap:
-                summary = snap
+                summary = json.load(f)
         except Exception:
             pass
     return {
@@ -200,18 +197,15 @@ def _build_balance_payload(ctx: dict, state: dict) -> dict:
 
 def _build_config_payload(ctx: dict, state: dict, bot_status: dict) -> dict:
     report = state.get("report", {})
-    summary = state.get("summary", {})
     control = _load_control_for_instance(ctx)
-    # 优先用独立 summary 快照（避免读到不完整的 state file）
+    # 只用独立 summary 快照，不读 state.summary（可能不完整）
     state_file = ctx.get("state_file", "")
     summary_file = os.path.join(os.path.dirname(state_file), "state_summary.json") if state_file else ""
+    summary = {}
     if summary_file and os.path.exists(summary_file):
-        # 直接读快照，不走 copy 逻辑（overlay copy2 可能失败）
         try:
             with open(summary_file, "r", encoding="utf-8") as f:
-                snap = json.load(f)
-            if snap:
-                summary = snap
+                summary = json.load(f)
         except Exception:
             pass
     return {
@@ -735,17 +729,15 @@ class StatusHandler(http.server.SimpleHTTPRequestHandler):
             state = _load_state_for_instance(ctx)
             bot_status = _load_status_for_instance(ctx)
             report = state.get("report", {})
-            summary = state.get("summary", {})
             control = _load_control_for_instance(ctx)
-            # 优先读独立 summary 快照
+            # 只用独立 summary 快照，不读 state.summary
             state_file = ctx.get("state_file", "")
             summary_file = os.path.join(os.path.dirname(state_file), "state_summary.json") if state_file else ""
+            summary = {}
             if summary_file and os.path.exists(summary_file):
                 try:
                     with open(summary_file, "r", encoding="utf-8") as f:
-                        snap = json.load(f)
-                    if snap:
-                        summary = snap
+                        summary = json.load(f)
                 except Exception:
                     pass
             # 合并 control.json 覆盖的键
