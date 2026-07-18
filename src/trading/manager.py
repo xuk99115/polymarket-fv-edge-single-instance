@@ -524,7 +524,7 @@ class TradingBotManager:
         # 写 summary 快照（status_server 优先读这个）
         summary_file = os.path.join(os.path.dirname(self.state_manager.state_file), "state_summary.json")
         try:
-            save_json_file(summary_file, state["summary"])
+            save_json_file(summary_file, dict(state["summary"]))  # 深拷贝快照，避免并发修改
             logger.info("_refresh_summary: trades=%d closed=%d cash=%.4f", total_trades, total, cash)
         except Exception:
             pass
