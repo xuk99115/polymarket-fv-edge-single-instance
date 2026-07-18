@@ -469,6 +469,7 @@ class TradingBotManager:
     def _refresh_summary(self) -> None:
         state = self.state_manager.get_state()
         positions = state.get("positions", [])
+        total_trades = len(state.get("trades", []))
         
         closed = [
             trade
@@ -482,7 +483,6 @@ class TradingBotManager:
         total = len(closed)
         start_balance = Config.get_float("PAPER_START_BALANCE", "100")
         cash = round(start_balance + realized, 4)
-        
         reserved = sum(safe_float(position.get("stake"), 0.0) or 0.0 for position in positions)
         unrealized = 0.0
         for position in positions:
@@ -525,6 +525,7 @@ class TradingBotManager:
         summary_file = os.path.join(os.path.dirname(self.state_manager.state_file), "state_summary.json")
         try:
             save_json_file(summary_file, state["summary"])
+            logger.info("_refresh_summary: trades=%d closed=%d cash=%.4f", total_trades, total, cash)
         except Exception:
             pass
 
