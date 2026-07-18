@@ -520,6 +520,13 @@ class TradingBotManager:
             "session_started_at": state.get("session_started_at"),
         }
         self.state_manager.save()
+        
+        # 写 summary 快照（status_server 优先读这个）
+        summary_file = os.path.join(os.path.dirname(self.state_manager.state_file), "state_summary.json")
+        try:
+            save_json_file(summary_file, state["summary"])
+        except Exception:
+            pass
 
     @staticmethod
     def _append_jsonl(path: str, event: Dict[str, Any]) -> bool:

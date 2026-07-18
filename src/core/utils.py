@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional, Any
 
 def load_json_file(path: str, default: Any) -> Any:
-    """从文件加载 JSON，失败则返回默认值。直接读取，避免 copy 在 FUSE 上读不完整数据。"""
+    """从文件加载 JSON，失败则返回默认值。直接读取 + 重试。"""
     for attempt in range(3):
         try:
             if os.path.exists(path):
@@ -13,11 +13,11 @@ def load_json_file(path: str, default: Any) -> Any:
                     data = json.load(f)
                 if data:
                     return data
-        except Exception:
+        except (json.JSONDecodeError, Exception):
             pass
         if attempt < 2:
             import time
-            time.sleep(0.1)
+            time.sleep(0.05)  # 50ms 重试，避开 bot 写入窗口
     return default
 
 def save_json_file(path: str, data: Any):
