@@ -23,7 +23,7 @@ logger = logging.getLogger("fv_edge")
 
 # Tunables (validated 2026-07-10 by scripts/analyze_fv_edge_combined.py)
 FV_EDGE_THRESHOLD_BPS = 500       # 5% minimum edge to act (raised 2026-07-17: 300-500bps 区间 4 笔全输)
-FV_EDGE_MAX_MTE = 1.5             # temporary risk valve: last 1.5 minutes
+FV_EDGE_MAX_MTE = 1.5             # 1.5 minutes: only trade fresh signals (tightened 2026-07-18)
 FV_EDGE_MIN_PRICE = 0.10          # avoid illiquid penny trades
 FV_EDGE_MAX_PRICE = 0.85          # avoid 90c+ late bias zone
 FV_EDGE_REQUIRE_FAVORITE_SIDE = True
