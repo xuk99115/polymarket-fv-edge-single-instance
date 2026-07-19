@@ -120,21 +120,19 @@ class StatusExporter:
             elif key in existing:
                 data[key] = existing[key]
 
-        # 添加 freshness 字段：direction_updated_at 用当前时间表示"方向过滤器正在运行"
-        # 如果 direction_updated_at 与 last_update 差值 > 120s，前端应显示 STALE
+        # 计算方向状态 freshness
         from datetime import datetime, timezone
+        dir_stale = 9999
+        dir_fresh = False
         if "direction_updated_at" in data:
             try:
                 last_dir_update = datetime.fromisoformat(data["direction_updated_at"])
                 now = datetime.now(timezone.utc)
-                stale_seconds = (now - last_dir_update).total_seconds()
-                data["direction_stale_seconds"] = round(stale_seconds, 1)
-                data["direction_fresh"] = stale_seconds < 120
+                dir_stale = round((now - last_dir_update).total_seconds(), 1)
+                dir_fresh = dir_stale < 120
             except (ValueError, TypeError):
-                data["direction_stale_seconds"] = 9999
-                data["direction_fresh"] = False
-        else:
-            data["direction_stale_seconds"] = 9999
-            data["direction_fresh"] = False
+                pass
+        data["direction_stale_seconds"] = dir_stale
+        data["direction_fresh"] = dir_fresh
 
         save_json_file(STATUS_FILE, data)
