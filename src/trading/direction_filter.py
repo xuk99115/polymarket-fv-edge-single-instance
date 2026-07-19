@@ -86,7 +86,11 @@ class DirectionFilter:
         now = now or time.time()
 
         if now - self._last_calc_time < self.update_seconds:
-            return self._cached_result(now)
+            cached = self._cached_result(now)
+            # 即使是缓存结果，也更新 status 文件的 timestamp
+            if self.status_file:
+                self._write_cached_status(cached)
+            return cached
 
         self._last_calc_time = now
         raw_result = self._do_calculate()
@@ -355,6 +359,26 @@ class DirectionFilter:
             confirmed_count=self._confirm_count,
         )
 
+    def _write_cached_status(self, result: DirectionResult) -> None:
+        """写入缓存结果的状态（仅更新 timestamp，不覆盖方向值）。"""
+        if not self.status_file:
+            return
+        try:
+            status = {}
+            if os.path.exists(self.status_file):
+                with open(self.status_file, "r") as f:
+                    try:
+                        status = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+            # 只更新 timestamp，保留已有的 direction 值
+            status["direction_updated_at"] = datetime.now(timezone.utc).isoformat()
+            with open(self.status_file, "w") as f:
+                json.dump(status, f, indent=2, ensure_ascii=False)
+                f.flush()
+        except (OSError, IOError) as e:
+            logger.warning("Failed to write cached direction status: %s", e)
+
     def _log_result(self, result: DirectionResult) -> None:
         """记录审计日志（写入 raw direction）。"""
         if not self.log_file:
@@ -375,7 +399,7 @@ class DirectionFilter:
                 f.write(json.dumps(log_entry) + "\n")
                 f.flush()
         except (OSError, IOError) as e:
-            logger.debug("Failed to write direction log: %s", e)
+            logger.warning("Failed to write direction log: %s", e)
 
     def _write_status(self, result: DirectionResult) -> None:
         """写入方向状态到 bot_status.json。
@@ -403,4 +427,4 @@ class DirectionFilter:
                 json.dump(status, f, indent=2, ensure_ascii=False)
                 f.flush()
         except (OSError, IOError) as e:
-            logger.debug("Failed to write direction status: %s", e)
+            logger.warning("Failed to write direction status: %s", e)
