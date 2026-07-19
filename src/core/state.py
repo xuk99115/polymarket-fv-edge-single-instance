@@ -111,14 +111,10 @@ class StatusExporter:
         except (OSError, IOError):
             pass
 
-        # 合并方向字段：优先使用独立文件中的最新值
-        direction_keys = [k for k in existing.keys() if k.startswith("direction")]
-        direction_keys.extend(k for k in direction_from_file.keys() if k.startswith("direction") and k not in direction_keys)
-        for key in direction_keys:
-            if key in direction_from_file:
-                data[key] = direction_from_file[key]
-            elif key in existing:
-                data[key] = existing[key]
+        # 合并方向字段：从独立文件读取（不依赖已被覆盖的 existing）
+        for key, val in direction_from_file.items():
+            if key.startswith("direction"):
+                data[key] = val
 
         # 计算方向状态 freshness
         from datetime import datetime, timezone
