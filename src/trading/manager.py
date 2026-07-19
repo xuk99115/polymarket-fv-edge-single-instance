@@ -105,8 +105,8 @@ class TradingBotManager:
     # 日志型数据 → 临时卷（EIO 无害）
     BTC_TICKS_FILE = os.path.join(_RUNTIME_DIR, "btc_ticks.jsonl")
     FAIR_VALUE_PREDICTIONS_FILE = os.path.join(_RUNTIME_DIR, "fair_value_predictions.jsonl")
-    DIRECTION_STATUS_FILE = os.path.join(_PERSIST_DIR, "bot_status.json")
-    DIRECTION_LOG_FILE = os.path.join(_PERSIST_DIR, "fv_direction.jsonl")
+    DIRECTION_STATUS_FILE = os.path.join(_RUNTIME_DIR, "bot_status.json")
+    DIRECTION_LOG_FILE = os.path.join(_RUNTIME_DIR, "fv_direction.jsonl")
 
     def __init__(self):
         self.state_manager = StateManager(PAPER_STATE_FILE)
