@@ -111,30 +111,6 @@ class StatusExporter:
         except (OSError, IOError):
             pass
 
-        # 从 fv_direction.jsonl 读取最后一条日志的时间戳作为 freshness 指标
-        direction_log_file = os.path.join(
-            os.environ.get("PERSIST_DIR", "/data/workspace/polymarket-fv-edge-single-instance/data"),
-            "fv_direction.jsonl",
-        )
-        direction_log_ts = {}
-        try:
-            if os.path.exists(direction_log_file):
-                with open(direction_log_file, "r") as f:
-                    lines = f.readlines()
-                    if lines:
-                        last_line = lines[-1].strip()
-                        if last_line:
-                            log_entry = json.loads(last_line)
-                            direction_log_ts["direction_updated_at"] = log_entry.get("t", "")
-                            direction_log_ts["direction"] = log_entry.get("direction", "")
-                            direction_log_ts["direction_pct_15m"] = log_entry.get("pct_15m", 0)
-                            direction_log_ts["direction_pct_60m"] = log_entry.get("pct_60m", 0)
-                            direction_log_ts["direction_confirmed"] = log_entry.get("confirmed_count", 0)
-                            direction_log_ts["direction_mode"] = log_entry.get("mode", "")
-                            direction_log_ts["direction_stale_seconds"] = log_entry.get("stale_seconds", 0)
-        except (OSError, IOError, json.JSONDecodeError, IndexError):
-            pass
-
         # 合并方向字段：优先使用独立文件中的最新值
         direction_keys = [k for k in existing.keys() if k.startswith("direction")]
         direction_keys.extend(k for k in direction_from_file.keys() if k.startswith("direction") and k not in direction_keys)
@@ -144,9 +120,21 @@ class StatusExporter:
             elif key in existing:
                 data[key] = existing[key]
 
-        # 合并方向时间戳和值（从日志文件读取，保证时效性）
-        for key, val in direction_log_ts.items():
-            if key.startswith("direction"):
-                data[key] = val
+        # 添加 freshness 字段：direction_updated_at 用当前时间表示"方向过滤器正在运行"
+        # 如果 direction_updated_at 与 last_update 差值 > 120s，前端应显示 STALE
+        from datetime import datetime, timezone
+        if "direction_updated_at" in data:
+            try:
+                last_dir_update = datetime.fromisoformat(data["direction_updated_at"])
+                now = datetime.now(timezone.utc)
+                stale_seconds = (now - last_dir_update).total_seconds()
+                data["direction_stale_seconds"] = round(stale_seconds, 1)
+                data["direction_fresh"] = stale_seconds < 120
+            except (ValueError, TypeError):
+                data["direction_stale_seconds"] = 9999
+                data["direction_fresh"] = False
+        else:
+            data["direction_stale_seconds"] = 9999
+            data["direction_fresh"] = False
 
         save_json_file(STATUS_FILE, data)
