@@ -168,7 +168,6 @@ class TradingBotManager:
             threshold_60m_bps=threshold_60m,
             threshold_15m_bps=threshold_15m,
             max_stale_seconds=max_stale,
-            ticks_file=self.BTC_TICKS_FILE,
             status_file=self.DIRECTION_STATUS_FILE,
             log_file=self.DIRECTION_LOG_FILE,
         )
