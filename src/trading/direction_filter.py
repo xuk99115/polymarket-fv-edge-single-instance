@@ -203,15 +203,27 @@ class DirectionFilter:
                                data_points_15m=pts_15m, data_points_60m=pts_60m, stale_seconds=round(stale, 1))
 
     def _update_state_machine(self, result: DirectionResult) -> None:
+        """两次确认的安全状态机。"""
         current = self._last_direction
         new_dir = result.direction
 
+        # stale/窗口不足等 UNKNOWN 必须立刻撤销旧门控状态。
         if new_dir == DirectionState.UNKNOWN:
             self._confirm_count = 0
             self._transition_target = None
             self._last_direction = DirectionState.UNKNOWN
+            result.confirmed_count = 0
             return
 
+        # 冷启动：首次任何可识别方向先进入 TRANSITION，绝不直接放行。
+        if current == DirectionState.UNKNOWN:
+            self._confirm_count = 1
+            self._transition_target = new_dir
+            self._last_direction = DirectionState.TRANSITION
+            result.confirmed_count = self._confirm_count
+            return
+
+        # 反转确认中：连续同一 raw direction 达到 confirmations 才切换。
         if self._transition_target is not None:
             if new_dir == self._transition_target:
                 self._confirm_count += 1
@@ -220,28 +232,23 @@ class DirectionFilter:
                     self._transition_target = None
                     self._confirm_count = 0
             else:
-                self._transition_target = None
-                self._confirm_count = 0
-                if new_dir != current:
-                    self._confirm_count = 1
-                    self._transition_target = new_dir
-                    self._last_direction = DirectionState.TRANSITION
-                else:
-                    self._last_direction = current
-        else:
-            if new_dir == current:
-                self._confirm_count += 1
-                if self._confirm_count < self.confirmations:
-                    self._transition_target = new_dir
-                    self._last_direction = DirectionState.TRANSITION
-            else:
-                if current == DirectionState.UNKNOWN:
-                    self._confirm_count = 1
-                    self._last_direction = new_dir
-                else:
-                    self._confirm_count = 1
-                    self._transition_target = new_dir
-                    self._last_direction = DirectionState.TRANSITION
+                # raw 方向改变：以新方向重新开始确认，不沿用旧计数。
+                self._confirm_count = 1
+                self._transition_target = new_dir
+                self._last_direction = DirectionState.TRANSITION
+            result.confirmed_count = self._confirm_count
+            return
+
+        if new_dir == current:
+            # 已确认方向遇到同向 raw：保持，不得回跳 TRANSITION。
+            self._confirm_count = 0
+            result.confirmed_count = 0
+            return
+
+        # 已确认方向发生变化：进入 TRANSITION，等待连续确认。
+        self._confirm_count = 1
+        self._transition_target = new_dir
+        self._last_direction = DirectionState.TRANSITION
         result.confirmed_count = self._confirm_count
 
     def _write_cached_status(self, result: DirectionResult) -> None:

@@ -22,6 +22,13 @@ logger = logging.getLogger("sync_runtime")
 
 # 需要同步的文件列表
 SYNC_FILES = [
+    # 运行时交易状态 / 前端快照
+    "paper_trade_state.json",
+    "state_summary.json",
+    "bot_status.json",
+    "direction_state.json",
+    "fv_direction.jsonl",
+    # 运行时行情与审计
     "btc_ticks.jsonl",
     "fair_value_predictions.jsonl",
     "btc_snapshot.json",

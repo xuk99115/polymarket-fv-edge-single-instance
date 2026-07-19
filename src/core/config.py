@@ -15,13 +15,13 @@ BASE_DIR = Path(__file__).parent.parent.parent.absolute()
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DOCS_DIR = os.path.join(BASE_DIR, "docs")
 
-# 双目录架构：运行时写临时卷，定时同步到永久卷
-# RUNTIME_DIR: 容器临时卷 /tmp — 零 EIO 风险
-# PERSIST_DIR: 永久卷 — 断电不丢
+# 双目录架构：运行时文件只写 /tmp；永久卷仅由同步器低频备份。
+# 这样 FUSE/OverlayFS 的 EIO 不会进入交易主循环。
 RUNTIME_DIR = os.environ.get("RUNTIME_DIR", "/tmp/polymarket-fv-edge/data")
 PERSIST_DIR = os.environ.get("PERSIST_DIR", os.path.join(str(BASE_DIR), "data"))
-STATUS_FILE = os.path.join(DATA_DIR, "bot_status.json")
-PAPER_STATE_FILE = os.path.join(DATA_DIR, "paper_trade_state.json")
+os.makedirs(RUNTIME_DIR, exist_ok=True)
+STATUS_FILE = os.path.join(RUNTIME_DIR, "bot_status.json")
+PAPER_STATE_FILE = os.path.join(RUNTIME_DIR, "paper_trade_state.json")
 REPORT_FILE = os.path.join(DOCS_DIR, "paper_trade_report.md")
 CONTROL_FILE = os.path.join(DATA_DIR, "trading_control.json")
 ENV_FILE = os.path.join(BASE_DIR, ".env")

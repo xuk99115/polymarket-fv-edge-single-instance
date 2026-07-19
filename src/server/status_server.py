@@ -47,6 +47,7 @@ PORT = int(os.environ.get("STATUS_PORT") or Config.get("STATUS_PORT", "8889"))
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(os.path.dirname(CURRENT_DIR))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
+RUNTIME_DIR = os.environ.get("RUNTIME_DIR", "/tmp/polymarket-fv-edge/data")
 PUBLIC_DIR = os.path.join(ROOT_DIR, "public")
 WEB_TOKEN_FILE = os.path.join(DATA_DIR, ".web_token")
 STATUS_FILE = os.path.join(DATA_DIR, "bot_status.json")
@@ -104,8 +105,9 @@ def _instance_context(instance: str) -> dict:
         "label": "FV Edge",
         "root_dir": ROOT_DIR,
         "data_dir": DATA_DIR,
-        "status_file": STATUS_FILE,
-        "state_file": PAPER_STATE_FILE,
+        # 实时 API 只读运行时快照；永久卷仅作备份和恢复来源。
+        "status_file": os.path.join(RUNTIME_DIR, "bot_status.json"),
+        "state_file": os.path.join(RUNTIME_DIR, "paper_trade_state.json"),
         "control_file": CONTROL_FILE,
         "env_file": ENV_FILE,
     }

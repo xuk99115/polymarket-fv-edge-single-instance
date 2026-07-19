@@ -97,10 +97,11 @@ class TradingBotManager:
     os.makedirs(_RUNTIME_DIR, exist_ok=True)
     os.makedirs(_PERSIST_DIR, exist_ok=True)
 
-    # 核心状态 → 永久卷（断电不丢）
-    BTC_SNAPSHOT_FILE = os.path.join(_PERSIST_DIR, "btc_snapshot.json")
-    BTC_WINDOW_REFS_FILE = os.path.join(_PERSIST_DIR, "btc_window_refs.json")
-    POSITION_AUDIT_FILE = os.path.join(_PERSIST_DIR, "position_audit.jsonl")
+    # 核心运行态 → 临时卷；同步器每 30s 备份到永久卷。
+    # 交易主循环禁止直接写 FUSE 永久卷，避免 EIO 干扰状态与成交。
+    BTC_SNAPSHOT_FILE = os.path.join(_RUNTIME_DIR, "btc_snapshot.json")
+    BTC_WINDOW_REFS_FILE = os.path.join(_RUNTIME_DIR, "btc_window_refs.json")
+    POSITION_AUDIT_FILE = os.path.join(_RUNTIME_DIR, "position_audit.jsonl")
 
     # 日志型数据 → 临时卷（EIO 无害）
     BTC_TICKS_FILE = os.path.join(_RUNTIME_DIR, "btc_ticks.jsonl")
@@ -558,18 +559,12 @@ class TradingBotManager:
         }
         self.state_manager.save()
         
-        # 写 summary 快照（status_server 优先读这个）
-        summary_file = os.path.join(os.path.dirname(self.state_manager.state_file), "state_summary.json")
+        # 写 summary 快照到运行时目录；同步器异步备份到永久卷。
+        # 交易主循环禁止直接写 FUSE 持久卷，避免 EIO 与前端半写入。
+        summary_file = os.path.join(self._RUNTIME_DIR, "state_summary.json")
         try:
             snap_data = dict(state["summary"])
-            # 直接写入，不用 save_json_file（FUSE rename 不可靠）
-            with open(summary_file, "w", encoding="utf-8") as f:
-                json.dump(snap_data, f, indent=2, ensure_ascii=False)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
+            save_json_file(summary_file, snap_data)
             logger.info("save_summary_snap: cash=%.4f file=%s", snap_data.get("cash_balance"), summary_file)
         except Exception as e:
             logger.warning("save_summary_snap failed: %s", e)
@@ -856,6 +851,10 @@ class TradingBotManager:
             dir_filter = getattr(self, "direction_filter", None)
             if dir_filter is not None:
                 dir_filter.set_history(self._btc_history)
+                # 方向状态是独立心跳：不能依赖“存在可评估候选”才刷新。
+                # 市场报价/门槛提前 return 时，scan 可能完全不调用 should_allow_trade，
+                # 会导致 bot 活着但 direction_updated_at 过期。
+                dir_filter.calculate(now_utc.timestamp())
             signals = self.fv_edge.scan(markets, now_utc, direction_filter=dir_filter)
             by_slug = {market.get("slug"): market for market in markets}
             for signal in signals:
