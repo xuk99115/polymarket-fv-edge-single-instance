@@ -105,6 +105,8 @@ class TradingBotManager:
     # 日志型数据 → 临时卷（EIO 无害）
     BTC_TICKS_FILE = os.path.join(_RUNTIME_DIR, "btc_ticks.jsonl")
     FAIR_VALUE_PREDICTIONS_FILE = os.path.join(_RUNTIME_DIR, "fair_value_predictions.jsonl")
+    DIRECTION_STATUS_FILE = os.path.join(_PERSIST_DIR, "bot_status.json")
+    DIRECTION_LOG_FILE = os.path.join(_RUNTIME_DIR, "fv_direction.jsonl")
 
     def __init__(self):
         self.state_manager = StateManager(PAPER_STATE_FILE)
@@ -136,11 +138,44 @@ class TradingBotManager:
         self._btc_window_refs: Dict[str, Dict[str, Any]] = (
             load_json_file(self.BTC_WINDOW_REFS_FILE, {}) or {}
         )
+        
+        # 启动时从 btc_ticks.jsonl 恢复最近 2 小时数据
+        self._recover_btc_history()
+        
+        # 初始化方向过滤器
+        self._init_direction_filter()
 
         state = self.state_manager.get_state()
         state["strategy"] = "fv_edge"
         state.setdefault("fv_signal_history", [])
         self.state_manager.save()
+
+    def _init_direction_filter(self) -> None:
+        """初始化方向过滤器。"""
+        from .direction_filter import DirectionFilter
+        
+        mode = Config.get("FV_DIRECTION_MODE", "shadow") or "shadow"
+        update_secs = Config.get_int("FV_DIRECTION_UPDATE_SECONDS", "60")
+        confirmations = Config.get_int("FV_DIRECTION_CONFIRMATIONS", "2")
+        threshold_60m = Config.get_int("FV_DIRECTION_THRESHOLD_60M_BPS", "30")
+        threshold_15m = Config.get_int("FV_DIRECTION_THRESHOLD_15M_BPS", "10")
+        max_stale = Config.get_int("FV_DIRECTION_MAX_STALE_SECONDS", "900")
+        
+        self.direction_filter = DirectionFilter(
+            mode=mode,
+            update_seconds=update_secs,
+            confirmations=confirmations,
+            threshold_60m_bps=threshold_60m,
+            threshold_15m_bps=threshold_15m,
+            max_stale_seconds=max_stale,
+            ticks_file=self.BTC_TICKS_FILE,
+            status_file=self.DIRECTION_STATUS_FILE,
+            log_file=self.DIRECTION_LOG_FILE,
+        )
+        logger.info(
+            "Direction filter initialized: mode=%s update=%ds confirm=%d 60m=%dbps 15m=%dbps",
+            mode, update_secs, confirmations, threshold_60m, threshold_15m,
+        )
 
     @staticmethod
     def _requested_mode() -> str:
@@ -373,7 +408,10 @@ class TradingBotManager:
             # an ask-only drift check cannot detect a changed fair value.
             if self._latest_btc:
                 self.fv_edge.update_btc_snapshot(self._latest_btc, self._btc_window_refs)
-                refreshed = self.fv_edge.scan([fresh_market], now_utc)
+                refreshed = self.fv_edge.scan(
+                    [fresh_market], now_utc,
+                    direction_filter=getattr(self, "direction_filter", None),
+                )
                 signal_to_execute = next(
                     (item for item in refreshed if item.get("outcome_index") == outcome_index),
                     None,
@@ -599,6 +637,59 @@ class TradingBotManager:
         save_json_file(self.BTC_WINDOW_REFS_FILE, self._btc_window_refs)
         return ref
 
+    def _recover_btc_history(self) -> None:
+        """启动时从 btc_ticks.jsonl 恢复最近 2 小时 chainlink 数据。
+        
+        优先使用 measurement_at，没有时才用 t。
+        只加载 source=chainlink_rtds 的记录。
+        """
+        import time as _time
+        now = datetime.now(timezone.utc)
+        cutoff_ts = now.timestamp() - 7200  # 2 小时前
+        
+        ticks_file = self.BTC_TICKS_FILE
+        recovered = 0
+        try:
+            with open(ticks_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        tick = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    # 只加载 chainlink 数据
+                    source = tick.get("source", "")
+                    if source != "chainlink_rtds":
+                        continue
+                    
+                    # 确定时间戳：优先 measurement_at
+                    measurement_at = tick.get("measurement_at") or tick.get("t")
+                    if not measurement_at:
+                        continue
+                    try:
+                        ts = iso_to_utc_dt(measurement_at).timestamp()
+                    except (TypeError, ValueError):
+                        continue
+                    
+                    if ts < cutoff_ts:
+                        continue
+                    
+                    price = tick.get("price")
+                    if price is None:
+                        continue
+                    
+                    self._btc_history.append({"ts": ts, "price": float(price)})
+                    recovered += 1
+        except (FileNotFoundError, OSError):
+            logger.info("No btc_ticks.jsonl found for recovery")
+        
+        # 按时间排序
+        self._btc_history.sort(key=lambda x: x["ts"])
+        logger.info("Recovered %d btc ticks from history (now holding %d points)", recovered, len(self._btc_history))
+
     def _estimate_sigma_from_history(self) -> Optional[float]:
         observations = self._btc_history[-600:]
         if len(observations) < 4:
@@ -703,7 +794,9 @@ class TradingBotManager:
                     price = float(btc["price"])
                     history_ts = iso_to_utc_dt(measurement_at).timestamp()
                     self._btc_history.append({"ts": history_ts, "price": price})
-                    self._btc_history = self._btc_history[-600:]
+                    # 按时间保留 2 小时（非固定条数）
+                    cutoff = now_utc.timestamp() - 7200
+                    self._btc_history = [t for t in self._btc_history if t["ts"] >= cutoff]
                     sigma = self._estimate_sigma_from_history() or safe_float(
                         signal_context.get("sigma_15m")
                     )
@@ -760,7 +853,11 @@ class TradingBotManager:
         max_btc_age = Config.get_int("FV_EDGE_MAX_BTC_AGE_SECONDS", "3")
         if trading_enabled and btc and btc.get("cache_age_secs", 9999) <= max_btc_age:
             self.fv_edge.update_btc_snapshot(btc, window_refs=self._btc_window_refs)
-            signals = self.fv_edge.scan(markets, now_utc)
+            # 注入方向过滤器和 BTC 历史
+            dir_filter = getattr(self, "direction_filter", None)
+            if dir_filter is not None:
+                dir_filter.set_history(self._btc_history)
+            signals = self.fv_edge.scan(markets, now_utc, direction_filter=dir_filter)
             by_slug = {market.get("slug"): market for market in markets}
             for signal in signals:
                 market = by_slug.get(signal.get("slug"))

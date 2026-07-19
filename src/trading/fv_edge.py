@@ -108,17 +108,26 @@ class FVEdgeStrategy:
         self,
         markets: List[Dict[str, Any]],
         now_utc: datetime,
+        direction_filter=None,
     ) -> List[Dict[str, Any]]:
         """Scan BTC 15m markets for FV-vs-market edge.
 
         Returns FV Edge BUY signals with execution and diagnostic fields.
 
         Empty list if no BTC data or no qualifying markets.
+        
+        Args:
+            direction_filter: DirectionFilter 实例，用于方向过滤（可选）
         """
         signals: List[Dict[str, Any]] = []
         self.last_scan_at = now_utc
         self.last_evaluation_count = 0
         self.last_qualifying_count = 0
+        
+        # 方向过滤：提前计算方向
+        direction_result = None
+        if direction_filter is not None:
+            direction_result = direction_filter.calculate(now=now_utc.timestamp())
 
         btc = self.last_btc_snap or {}
         btc_price = btc.get("price")
@@ -160,10 +169,26 @@ class FVEdgeStrategy:
                 sigma_15m,
                 ref_source=ref_record.get("source") or market.get("chainlink_ref_source"),
             )
-            if sig is not None:
-                signals.append(sig)
-                self.signals_emitted += 1
-                self.last_qualifying_count += 1
+            if sig is None:
+                continue
+            
+            # 方向过滤：在 max(edge) 之后、返回之前过滤
+            if direction_filter is not None and direction_result is not None:
+                allowed = direction_filter.should_allow_trade(sig, now_utc.timestamp())
+                if not allowed:
+                    # shadow 模式下记录被过滤的候选
+                    if direction_filter.mode == "shadow":
+                        direction_filter.record_shadow_candidate(sig, was_filtered=True)
+                    continue
+            
+            signals.append(sig)
+            self.signals_emitted += 1
+            self.last_qualifying_count += 1
+            
+            # shadow 模式下记录允许的候选
+            if direction_filter is not None and direction_filter.mode == "shadow":
+                direction_filter.record_shadow_candidate(sig, was_filtered=False)
+                
         return signals
 
     def _evaluate_market(
