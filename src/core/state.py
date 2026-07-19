@@ -135,4 +135,9 @@ class StatusExporter:
         data["direction_stale_seconds"] = dir_stale
         data["direction_fresh"] = dir_fresh
 
-        save_json_file(STATUS_FILE, data)
+        # 写入运行时目录，由 sync 机制推送到永久卷
+        runtime_status = os.path.join(
+            os.environ.get("RUNTIME_DIR", "/tmp/polymarket-fv-edge/data"),
+            "bot_status.json",
+        )
+        save_json_file(runtime_status, data)
