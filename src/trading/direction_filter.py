@@ -69,7 +69,9 @@ class DirectionFilter:
     def calculate(self, now: Optional[float] = None) -> DirectionResult:
         now = now or time.time()
         if now - self._last_calc_time < self.update_seconds:
-            return self._cached_result(now)
+            cached = self._cached_result(now)
+            self._write_cached_status(cached)
+            return cached
         self._last_calc_time = now
         raw = self._do_calculate()
         self._update_state_machine(raw)
