@@ -203,77 +203,67 @@ class DirectionFilter:
                                data_points_15m=pts_15m, data_points_60m=pts_60m, stale_seconds=round(stale, 1))
 
     def _update_state_machine(self, result: DirectionResult) -> None:
-        """状态机：连续两次确认才切换方向，反转走 TRANSITION。
-
-        规则：
-        1. UNKNOWN → UP/DOWN：必须走 TRANSITION（不允许直接切换）
-        2. 已确认 UP/DOWN 后，相同方向连续出现 → 保持确认状态，不进 TRANSITION
-        3. 已确认 UP/DOWN 后，不同方向出现 → 进入 TRANSITION
-        4. TRANSITION 期间相同方向 → confirm_count++，达到阈值则切换
-        5. TRANSITION 期间不同方向 → 重置，进入新方向的 TRANSITION
-        """
         current = self._last_direction
         new_dir = result.direction
 
-        # 规则：UNKNOWN 数据 → 立即 UNKNOWN
         if new_dir == DirectionState.UNKNOWN:
             self._confirm_count = 0
             self._transition_target = None
             self._last_direction = DirectionState.UNKNOWN
             return
 
-        # 规则 1：UNKNOWN → 任何方向必须走 TRANSITION
-        if current == DirectionState.UNKNOWN:
-            self._confirm_count = 1
-            self._transition_target = new_dir
-            self._last_direction = DirectionState.TRANSITION
-            result.confirmed_count = self._confirm_count
-            return
-
-        # 已在 TRANSITION 中
         if self._transition_target is not None:
             if new_dir == self._transition_target:
-                # 规则 4：TRANSITION 期间相同方向 → 计数
                 self._confirm_count += 1
                 if self._confirm_count >= self.confirmations:
-                    # 确认完成，切换到目标方向
                     self._last_direction = self._transition_target
                     self._transition_target = None
                     self._confirm_count = 0
             else:
-                # 规则 5：TRANSITION 期间不同方向 → 重置，进入新方向
-                self._confirm_count = 1
-                self._transition_target = new_dir
-                self._last_direction = DirectionState.TRANSITION
-            result.confirmed_count = self._confirm_count
-            return
-
-        # 不在 TRANSITION 中，current 是 UP/DOWN/NEUTRAL
-        if new_dir == current:
-            # 规则 2：相同方向 → 保持，不进 TRANSITION
-            self._confirm_count += 1
-            # 不需要进 TRANSITION，直接保持 current
+                self._transition_target = None
+                self._confirm_count = 0
+                if new_dir != current:
+                    self._confirm_count = 1
+                    self._transition_target = new_dir
+                    self._last_direction = DirectionState.TRANSITION
+                else:
+                    self._last_direction = current
         else:
-            # 规则 3：不同方向 → 进入 TRANSITION
-            self._confirm_count = 1
-            self._transition_target = new_dir
-            self._last_direction = DirectionState.TRANSITION
-
+            if new_dir == current:
+                self._confirm_count += 1
+                if self._confirm_count < self.confirmations:
+                    self._transition_target = new_dir
+                    self._last_direction = DirectionState.TRANSITION
+            else:
+                if current == DirectionState.UNKNOWN:
+                    self._confirm_count = 1
+                    self._last_direction = new_dir
+                else:
+                    self._confirm_count = 1
+                    self._transition_target = new_dir
+                    self._last_direction = DirectionState.TRANSITION
         result.confirmed_count = self._confirm_count
 
     def _write_cached_status(self, result: DirectionResult) -> None:
-        """仅更新方向时间戳（写入独立文件，不覆盖其他方向字段）。"""
-        ts_file = os.path.join(
+        """写入缓存结果的状态（仅更新 timestamp）。"""
+        runtime_status = os.path.join(
             os.environ.get("RUNTIME_DIR", "/tmp/polymarket-fv-edge/data"),
-            "direction_timestamp.json",
+            "direction_state.json",
         )
         try:
-            ts_data = {"direction_updated_at": datetime.now(timezone.utc).isoformat()}
-            with open(ts_file, "w") as f:
-                json.dump(ts_data, f, indent=2, ensure_ascii=False)
+            cached_data = {}
+            if os.path.exists(runtime_status):
+                with open(runtime_status, "r") as f:
+                    try:
+                        cached_data = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+            cached_data["direction_updated_at"] = datetime.now(timezone.utc).isoformat()
+            with open(runtime_status, "w") as f:
+                json.dump(cached_data, f, indent=2, ensure_ascii=False)
                 f.flush()
         except (OSError, IOError) as e:
-            logger.warning("Failed to write cached direction timestamp: %s", e)
+            logger.warning("Failed to write cached direction state: %s", e)
 
     def _cached_result(self, now: float) -> DirectionResult:
         return DirectionResult(direction=self._last_direction,
