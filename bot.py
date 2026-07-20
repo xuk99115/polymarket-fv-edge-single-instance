@@ -41,7 +41,7 @@ async def main():
 
     # 2. 启动后台同步任务
     sync_task = asyncio.create_task(
-        periodic_sync(RUNTIME_DIR, PERSIST_DIR, interval=30.0, stop_event=_stop_event),
+        periodic_sync(RUNTIME_DIR, PERSIST_DIR, interval=300.0, stop_event=_stop_event),
         name="periodic_sync"
     )
 

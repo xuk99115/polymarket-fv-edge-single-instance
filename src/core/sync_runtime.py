@@ -68,10 +68,14 @@ def sync_persist_to_runtime(persist_dir: str, runtime_dir: str) -> int:
     return count
 
 
-def sync_runtime_to_persist(runtime_dir: str, persist_dir: str) -> int:
-    """定时调用：把临时卷的数据备份到永久卷。"""
+def sync_runtime_to_persist(
+    runtime_dir: str,
+    persist_dir: str,
+    files: list[str] | None = None,
+) -> int:
+    """把运行时文件尽力备份到永久卷；失败不影响交易主循环。"""
     count = 0
-    for fname in SYNC_FILES:
+    for fname in files or SYNC_FILES:
         src = os.path.join(runtime_dir, fname)
         dst = os.path.join(persist_dir, fname)
         if os.path.exists(src):
@@ -87,19 +91,16 @@ def sync_runtime_to_persist(runtime_dir: str, persist_dir: str) -> int:
 async def periodic_sync(
     runtime_dir: str,
     persist_dir: str,
-    interval: float = 30.0,
+    interval: float = 300.0,
     stop_event: asyncio.Event | None = None,
 ) -> None:
-    """后台定时同步：每 interval 秒 RUNTIME -> PERSIST。"""
+    """后台低频同步：默认每 300 秒 RUNTIME -> PERSIST。"""
     logger.info("Periodic sync started: %s -> %s (every %.0fs)", runtime_dir, persist_dir, interval)
     while stop_event is None or not stop_event.is_set():
         try:
-            synced = sync_runtime_to_persist(runtime_dir, persist_dir)
-            if synced > 0:
-                logger.debug("Synced %d files to persist dir", synced)
+            sync_runtime_to_persist(runtime_dir, persist_dir)
         except Exception as e:
             logger.error("Periodic sync error: %s", e)
-
         try:
             if stop_event:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
@@ -109,7 +110,6 @@ async def periodic_sync(
             pass
         except Exception:
             pass
-
 
 def force_sync(runtime_dir: str, persist_dir: str) -> int:
     """停止时调用：强制同步所有文件到永久卷。"""
