@@ -32,6 +32,11 @@ FV_EDGE_MAX_BOOK_AGE_SECONDS = 3.0
 
 # Default position size in USDC.
 FV_EDGE_DEFAULT_POSITION_USD = 2.0
+# Conservative size tier: only use after the current data-quality reconciliation.
+# $3 is deliberately not a multiplier; all other qualifying signals retain $2.
+FV_EDGE_HIGH_CONFIDENCE_EDGE_BPS = 800.0
+FV_EDGE_HIGH_CONFIDENCE_MIN_PRICE = 0.70
+FV_EDGE_HIGH_CONFIDENCE_POSITION_USD = 3.0
 
 # Confidence curve (2026-07-11):
 #   edge=300bps -> 0.65
@@ -338,6 +343,16 @@ class FVEdgeStrategy:
             FV_EDGE_CONFIDENCE_BASE + edge_bps / FV_EDGE_CONFIDENCE_BPS_SCALE,
             FV_EDGE_CONFIDENCE_CAP,
         )
+        high_confidence = (
+            edge_bps >= FV_EDGE_HIGH_CONFIDENCE_EDGE_BPS
+            and buy_price >= FV_EDGE_HIGH_CONFIDENCE_MIN_PRICE
+        )
+        stake = (
+            FV_EDGE_HIGH_CONFIDENCE_POSITION_USD
+            if high_confidence
+            else self._position_usd
+        )
+        size_tier = "high_confidence" if high_confidence else "base"
 
         return {
             "action": "BUY",
@@ -360,7 +375,11 @@ class FVEdgeStrategy:
             "source": "fv_edge",
             # Execution metadata consumed by the FV-only manager.
             "hold_to_expiry": True,
-            "stake": self._position_usd,
+            "stake": stake,
+            "size_tier": size_tier,
+            "high_confidence": high_confidence,
+            "size_tier_edge_bps": FV_EDGE_HIGH_CONFIDENCE_EDGE_BPS,
+            "size_tier_min_price": FV_EDGE_HIGH_CONFIDENCE_MIN_PRICE,
             # Diagnostics consumed by status export and signal history.
             "fair_up": round(fair_up, 4),
             "edge_bps": round(edge_bps, 1),
