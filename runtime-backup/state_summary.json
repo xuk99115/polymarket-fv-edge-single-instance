@@ -1,0 +1,13 @@
+{
+  "cash_balance": 129.3806,
+  "reserved_balance": 0,
+  "ending_balance": 129.3806,
+  "open_positions": 0,
+  "realized_pnl": 29.3806,
+  "unrealized_pnl": 0.0,
+  "total_trades": 148,
+  "winning_trades": 106,
+  "losing_trades": 42,
+  "win_rate": 71.62,
+  "session_started_at": "2026-07-16T13:22:01.974482+00:00"
+}
