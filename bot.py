@@ -11,12 +11,6 @@ import signal
 import sys
 import os
 
-from src.core.sync_runtime import (
-    sync_persist_to_runtime,
-    force_sync,
-    periodic_sync,
-)
-
 def configure_logging(
     log_dir: str | None = None,
     max_bytes: int = 20 * 1024 * 1024,
@@ -51,10 +45,8 @@ def configure_logging(
 
 logger = logging.getLogger("bot")
 
-# 双目录路径（与 manager.py 保持一致）
+# 运行态唯一数据目录；GitHub 是恢复备份，不参与交易主循环。
 RUNTIME_DIR = os.environ.get("RUNTIME_DIR", "/tmp/polymarket-fv-edge/data")
-# bot.py 位于项目根目录；持久卷必须是 <project>/data，不能误指向 /data。
-PERSIST_DIR = os.environ.get("PERSIST_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 
 _stop_event = asyncio.Event()
 
@@ -62,21 +54,10 @@ _stop_event = asyncio.Event()
 async def main():
     from src.trading.manager import TradingBotManager
 
-    # 1. 启动时：PERSIST -> RUNTIME（恢复最新数据）
-    logger.info("Startup sync: %s -> %s", PERSIST_DIR, RUNTIME_DIR)
-    synced = sync_persist_to_runtime(PERSIST_DIR, RUNTIME_DIR)
-    logger.info("Restored %d files from persist dir", synced)
-
-    # 2. 启动后台同步任务
-    sync_task = asyncio.create_task(
-        periodic_sync(RUNTIME_DIR, PERSIST_DIR, interval=300.0, stop_event=_stop_event),
-        name="periodic_sync"
-    )
-
-    # 3. 启动交易管理器
+    # GitHub 备份在独立脚本中执行，不阻塞交易循环。
     manager = TradingBotManager()
 
-    # 4. 注册 SIGTERM/SIGINT 处理器
+    # 注册 SIGTERM/SIGINT 处理器
     def _signal_handler():
         logger.info("Received shutdown signal")
         _stop_event.set()
@@ -85,20 +66,8 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # 5. 运行交易主循环
-    try:
-        await manager.start()
-    finally:
-        # 6. 停止时：强制同步
-        logger.info("Shutting down, force syncing...")
-        _stop_event.set()
-        synced = force_sync(RUNTIME_DIR, PERSIST_DIR)
-        logger.info("Final sync: %d files written to persist dir", synced)
-        sync_task.cancel()
-        try:
-            await sync_task
-        except asyncio.CancelledError:
-            pass
+    # 运行交易主循环
+    await manager.start()
 
 
 if __name__ == "__main__":

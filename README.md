@@ -22,6 +22,33 @@ chmod +x run.sh
 
 The dashboard is available at `http://localhost:8889` by default.
 
+## Runtime Backup
+
+Recovery-critical runtime state is exported from `/tmp/polymarket-fv-edge/data` into
+`history/github-runtime-backup/` and can be pushed to GitHub on demand.
+
+```bash
+# Export only when state changed; pushes to origin/main and backup-20260713/fv-edge-main
+python3 scripts/github_runtime_backup.py
+
+# Dry run: refresh backup directory only, do not commit/push
+python3 scripts/github_runtime_backup.py --no-push
+
+# Restore backup files back into runtime before starting the bot
+python3 scripts/restore_runtime_from_github.py
+```
+
+Only these files are included in the GitHub runtime backup:
+
+- `paper_trade_state.json`
+- `state_summary.json`
+- `bot_status.json`
+- `direction_state.json`
+- `sync_health.json`
+
+Large replay/audit logs such as `btc_ticks.jsonl`, `fv_direction.jsonl`, and
+`position_audit.jsonl` are intentionally excluded.
+
 ## Configuration
 
 On first launch, `run.sh` copies `.env.example` to `.env`. Important settings:
