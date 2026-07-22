@@ -1,9 +1,9 @@
 {
-  "direction": "NEUTRAL",
-  "direction_pct_15m": -0.0557,
-  "direction_pct_60m": 0.1881,
-  "direction_stale_seconds": 4.9,
-  "direction_confirmed": 0,
+  "direction": "DOWN",
+  "direction_pct_15m": -0.233,
+  "direction_pct_60m": -0.3333,
+  "direction_stale_seconds": 1.7,
+  "direction_confirmed": 1,
   "direction_mode": "shadow",
-  "direction_updated_at": "2026-07-22T00:55:35.893132+00:00"
+  "direction_updated_at": "2026-07-22T01:21:35.845312+00:00"
 }

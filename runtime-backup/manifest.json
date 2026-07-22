@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-22T00:55:36.199209+00:00",
+  "generated_at": "2026-07-22T01:21:36.533544+00:00",
   "runtime_dir": "/tmp/polymarket-fv-edge/data",
   "files": [
     "paper_trade_state.json",
@@ -9,7 +9,7 @@
     "sync_health.json"
   ],
   "snapshot": {
-    "generated_at": "2026-07-22T00:55:35.956328+00:00",
+    "generated_at": "2026-07-22T01:21:36.337644+00:00",
     "cash_balance": 129.3806,
     "realized_pnl": 29.3806,
     "positions": 0,
@@ -25,8 +25,8 @@
     "file_hashes": {
       "paper_trade_state.json": "3b4ad2ac58a28fb7da73d09347445b47b850bb2dfe4aa653005b58ffc2968bdf",
       "state_summary.json": "8c65c52de401af289719ddb2d53072a39bf7ccd23459a43f808f205422270b0f",
-      "bot_status.json": "dea6dc5652d01ba9a30017f79a5c24d16f03a5ade23fddec730e65cd8086bbba",
-      "direction_state.json": "37ed9f8db1896d084f02180cebc17422e065e9045055703370822a4ca5f38618",
+      "bot_status.json": "40e282e3b52eb2f7898dbc33fac309abdc4ccbfc0dfdfd7872841e32f38ef35c",
+      "direction_state.json": "151c4799424259fd7f5d4a036dc3d1f69b733e1820b3312cbf696d44b7dcac34",
       "sync_health.json": "b70b43ce852b09a7da144b9e14cb714c2c9206c15384c2672398e6518de23464"
     }
   }
